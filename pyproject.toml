@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipshrink"
+version = "2.0.0"
+description = "Shrink images below a target file size while preserving quality."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+# pyvips[binary] bundles libvips on win/mac/linux. Bare pyvips needs a
+# system libvips, which CI runners don't have.
+vips = ["pyvips[binary]"]
+dev = ["pytest", "ruff", "mypy"]
+
+[project.scripts]
+clipshrink = "clipshrink:console_main"
+
+[tool.setuptools]
+py-modules = ["clipshrink"]
+packages = ["core"]
+
+[tool.setuptools.package-data]
+# PEP 561: ship inline type information for downstream importers of core/.
+core = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Unit suite is default. Integration suite uses real binaries and is opt-in:
+#   python -m pytest -m integration
+# (the CLI -m overrides addopts, tests skip when a binary is missing)
+addopts = "-m 'not integration'"
+markers = [
+    "integration: runs the real backend binaries (magick, avifenc, ...), opt in with -m integration",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Curated gate. Ruff format is off (hand-rolled compact style), as are E501
+# (long doc/table lines) and PL/TRY (fight backend-dance conventions).
+select = [
+  "E",        # pycodestyle errors (E501 excluded below)
+  "F",        # pyflakes (undefined names, unused imports)
+  "I",        # isort (import sorting)
+  "UP",       # pyupgrade (modern syntax)
+  "B",        # flake8-bugbear
+  "C4",       # flake8-comprehensions
+  "SIM",      # flake8-simplify
+  "RUF",      # ruff-specific rules
+  "PERF",     # perflint
+  "EXE",      # executable / shebang rules
+  "S101",     # bandit: assert (tests only)
+  "S108",     # bandit: hardcoded temp dirs
+  "S110",     # bandit: try-except-pass
+  "S112",     # bandit: try-except-continue
+]
+ignore = [
+  # BLE001: the backend dance catches broad exceptions to fall back vips -> magick.
+  "BLE001",
+  # S108: memgate reasons about temp dirs, and tests pin the literal paths.
+  "S108",
+  # E501: line length isn't enforced.
+  "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests swallow exceptions and use bare asserts. Security rules are for prod.
+"tests/*.py" = ["S101", "S110", "S112"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+# Optional runtime deps are lazy imports without stubs.
+ignore_missing_imports = true
+files = ["core", "clipshrink.py"]

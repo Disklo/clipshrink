@@ -1,0 +1,14 @@
+# Python dependencies for clipshrink, installed by `--install-deps` and by
+# the `--venv` flow (into the venv it manages). Runtime is still stdlib-only
+# without them. Each entry enables an optional capability:
+#
+#   py7zr                    extracts .7z archives during --install-deps
+#                            (must be installed before the backend binaries)
+#   pyvips                   preferred image backend (native libvips itself
+#                            comes from bin/ on Windows)
+#   pywin32                  Windows clipboard support
+#   pyobjc-framework-Cocoa   macOS clipboard support
+py7zr
+pyvips
+pywin32; sys_platform == "win32"
+pyobjc-framework-Cocoa; sys_platform == "darwin"

@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+
+.venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+bin/
+config.json

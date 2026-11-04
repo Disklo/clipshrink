@@ -1,0 +1,17 @@
+# CI constraints: exact pins for the dev/vips tooling, so `pip install
+# .[dev,vips]` in .github/workflows/ci.yml cannot drift under us (pytest,
+# ruff or mypy releasing mid-project would otherwise turn the gate red for
+# reasons unrelated to the change under test).
+#
+# These are the versions the gate is currently green with (the developer
+# environment). Regenerate after a deliberate upgrade with:
+#   pip install -q .[dev,vips] && pip freeze | grep -iE '^(pytest|ruff|mypy|pyvips)=='
+#
+# Direct pins only: the tools whose output IS the gate. Transitive deps
+# (pluggy, iniconfig, mypy_extensions, ...) are left floating. They do
+# not affect lint/typecheck/test verdicts.
+mypy==2.1.0
+pytest==9.1.1
+pyvips==3.1.1
+pyvips-binary==8.18.6
+ruff==0.16.6
