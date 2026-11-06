@@ -8,7 +8,7 @@ folder, or the clipboard.
 
 ### Installing the package
 
-The recommended way for a CLI is [pipx]:
+The recommended way for a CLI is [pipx](https://pipx.pypa.io/stable/):
 
 ```bash
 pipx install .
