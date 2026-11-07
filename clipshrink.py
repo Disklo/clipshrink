@@ -67,6 +67,12 @@ def _run_install_deps() -> bool:
         deps.suggest_venv_for_python_deps()
     if outdated:
         installed.extend(deps.install_backends(outdated, links=links))
+    missing_required = [spec.label for spec in missing
+                        if spec.required and spec.label not in installed]
+    if missing_required:
+        print(f"Required tool(s) failed to install: "
+              f"{', '.join(missing_required)}.")
+        ok = False
     if not missing and not outdated:
         print("All backend tools are already installed.")
     if installed:

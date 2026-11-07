@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -206,6 +207,11 @@ class BinaryLinks:
     mirror: str = ""
     url_linux: str = ""
     mirror_linux: str = ""
+    # sha256 of the matching download, empty = unverified
+    sha256: str = ""
+    sha256_mirror: str = ""
+    sha256_linux: str = ""
+    sha256_mirror_linux: str = ""
 
 
 def default_binaries_path() -> Path:
@@ -221,6 +227,16 @@ def platform_links(links: BinaryLinks | None) -> tuple[str, str]:
     if is_macos():
         return ("", "")
     return (links.url_linux, links.mirror_linux)
+
+
+def platform_checksums(links: BinaryLinks | None) -> tuple[str, str]:
+    if links is None:
+        return ("", "")
+    if is_windows():
+        return (links.sha256, links.sha256_mirror)
+    if is_macos():
+        return ("", "")
+    return (links.sha256_linux, links.sha256_mirror_linux)
 
 
 def load_binaries(path: Path | None = None) -> dict[str, BinaryLinks]:
@@ -239,12 +255,20 @@ def load_binaries(path: Path | None = None) -> dict[str, BinaryLinks]:
         mirror = entry.get("mirror", "")
         url_linux = entry.get("url_linux", "")
         mirror_linux = entry.get("mirror_linux", "")
-        if not all(isinstance(v, str)
-                   for v in (url, mirror, url_linux, mirror_linux)):
+        sha256 = entry.get("sha256", "")
+        sha256_mirror = entry.get("sha256_mirror", "")
+        sha256_linux = entry.get("sha256_linux", "")
+        sha256_mirror_linux = entry.get("sha256_mirror_linux", "")
+        if not all(isinstance(v, str) for v in (
+                url, mirror, url_linux, mirror_linux,
+                sha256, sha256_mirror, sha256_linux, sha256_mirror_linux)):
             continue
-        links[label] = BinaryLinks(url=url, mirror=mirror,
-                                   url_linux=url_linux,
-                                   mirror_linux=mirror_linux)
+        links[label] = BinaryLinks(
+            url=url, mirror=mirror, url_linux=url_linux,
+            mirror_linux=mirror_linux, sha256=sha256,
+            sha256_mirror=sha256_mirror, sha256_linux=sha256_linux,
+            sha256_mirror_linux=sha256_mirror_linux,
+        )
     return links
 
 
@@ -287,16 +311,17 @@ class ToolSpec:
     # download links come from binaries.json, keyed by label
     label: str
     binaries: tuple[str, ...]
-    package_manager: str | None = None  # non-Windows install hint
+    # ImageMagick is the only hard dependency
+    required: bool = False
 
 
 BACKEND_TOOLS: tuple[ToolSpec, ...] = (
-    ToolSpec("ImageMagick", ("magick",), "imagemagick"),
-    ToolSpec("libvips", ("vips",), "libvips-tools"),
-    ToolSpec("waifu2x-ncnn-vulkan", ("waifu2x-ncnn-vulkan",), None),
-    ToolSpec("realesrgan-ncnn-vulkan", ("realesrgan-ncnn-vulkan",), None),
-    ToolSpec("pngquant", ("pngquant",), "pngquant"),
-    ToolSpec("ffmpeg", ("ffmpeg", "ffprobe"), "ffmpeg"),
+    ToolSpec("ImageMagick", ("magick",), required=True),
+    ToolSpec("libvips", ("vips",)),
+    ToolSpec("waifu2x-ncnn-vulkan", ("waifu2x-ncnn-vulkan",)),
+    ToolSpec("realesrgan-ncnn-vulkan", ("realesrgan-ncnn-vulkan",)),
+    ToolSpec("pngquant", ("pngquant",)),
+    ToolSpec("ffmpeg", ("ffmpeg", "ffprobe")),
 )
 
 _EXEC_SUFFIXES = (".exe", ".dll", ".bat", ".cmd")
@@ -480,14 +505,8 @@ def warn_backends_posix(backend: BackendInfo, bin_path: Path | None = None) -> N
         return
     names = ", ".join(spec.label for spec in missing)
     print(f"Warning: missing backend tools: {names}.")
-    hints = [f"{spec.label}: {spec.package_manager}" for spec in missing
-             if spec.package_manager]
-    if hints:
-        print("Install them with your system package manager, e.g.: "
-              + "; ".join(hints) + ".")
-    manual = [spec.label for spec in missing if spec.package_manager is None]
-    if manual:
-        print(f"Install manually from their project pages: {', '.join(manual)}.")
+    print("Install them with your system's package manager first, or "
+          "from the official project websites.")
 
 
 def run_dependency_check(backend: BackendInfo, config: dict[str, Any],
@@ -670,6 +689,20 @@ def download_file(url: str, dest: Path) -> None:
         print()
 
 
+def verify_checksum(path: Path, expected: str) -> None:
+    # reject a truncated or swapped archive before it gets extracted
+    if not expected:
+        raise DepsError(f"no checksum for {path.name}")
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != expected.lower():
+        raise DepsError(
+            f"checksum mismatch for {path.name}: expected {expected}, got {actual}")
+
+
 def load_py7zr() -> Any:
     try:
         import py7zr
@@ -802,10 +835,8 @@ def _remove_stale_files(bin_path: Path, entry: dict[str, Any]) -> list[str]:
     return stale
 
 
-_VIPS_PKG_HINT = ("libvips: install it with your system package manager "
-                  "(e.g. 'sudo apt install libvips-tools' on Debian/Ubuntu, "
-                  "'sudo pacman -S libvips' on Arch, "
-                  "'sudo dnf install vips' on Fedora).")
+_VIPS_PKG_HINT = ("libvips: the package name varies by distro, so search "
+                  "your system's package manager for libvips.")
 _VIPS_BUILD_HINT = ("Building libvips needs a C toolchain, meson, ninja and "
                     "pkg-config plus the dev headers it uses (e.g. on "
                     "Debian/Ubuntu: build-essential meson ninja-build "
@@ -879,7 +910,9 @@ def _install_vips(spec: ToolSpec, tool_links: BinaryLinks, bin_path: Path,
         print("Installed pyvips[binary]; its bundled libvips will be used.")
         return True
     primary, mirror = platform_links(tool_links)
-    links = BinaryLinks(url=primary, mirror=mirror)
+    sha256, sha256_mirror = platform_checksums(tool_links)
+    links = BinaryLinks(url=primary, mirror=mirror,
+                        sha256=sha256, sha256_mirror=sha256_mirror)
     if not (primary or mirror) or _vips_link_is_source(primary):
         return _vips_without_binary(spec, links, bin_path, versions)
     return _install_one(spec, links, bin_path, versions)
@@ -909,7 +942,8 @@ def _build_vips_from_source(links: BinaryLinks, bin_path: Path,
     # tarball URL so outdated_backends tracks source builds too.
     prefix = bin_path / "vips"
     errors: list[str] = []
-    for url in (links.url, links.mirror):
+    for url, sha256 in ((links.url, links.sha256),
+                        (links.mirror, links.sha256_mirror)):
         if not url:
             continue
         try:
@@ -917,6 +951,10 @@ def _build_vips_from_source(links: BinaryLinks, bin_path: Path,
                 tmpdir = Path(tmp)
                 archive = tmpdir / url.rsplit("/", 1)[-1]
                 download_file(url, archive)
+                if sha256:
+                    verify_checksum(archive, sha256)
+                else:
+                    print(f"Warning: no checksum for {url}. Skipping verification.")
                 extract_dir = tmpdir / "src"
                 extract_dir.mkdir()
                 extract_archive(archive, extract_dir)
@@ -975,7 +1013,8 @@ def _install_one(spec: ToolSpec, tool_links: BinaryLinks, bin_path: Path,
         print(f"Updating {spec.label}: the installed bin/ version does not "
               "match binaries.json ...")
     errors: list[str] = []
-    for url in (tool_links.url, tool_links.mirror):
+    for url, sha256 in ((tool_links.url, tool_links.sha256),
+                        (tool_links.mirror, tool_links.sha256_mirror)):
         if not url:
             continue
         archive_name = url.rsplit("/", 1)[-1]
@@ -984,6 +1023,10 @@ def _install_one(spec: ToolSpec, tool_links: BinaryLinks, bin_path: Path,
                 tmpdir = Path(tmp)
                 archive = tmpdir / archive_name
                 download_file(url, archive)
+                if sha256:
+                    verify_checksum(archive, sha256)
+                else:
+                    print(f"Warning: no checksum for {url}. Skipping verification.")
                 if archive_name.lower().endswith(".appimage"):
                     archive.chmod(0o755)
                     result = utils.run_capture([str(archive), "--appimage-extract"],
@@ -1020,6 +1063,35 @@ def _install_one(spec: ToolSpec, tool_links: BinaryLinks, bin_path: Path,
     return False
 
 
+def _is_pipx_install() -> bool:
+    # pipx leaves its metadata in the venv root
+    venv = Path(sys.prefix).resolve()
+    if not (venv / "pipx_metadata.json").is_file():
+        return False
+    root = project_root().resolve()
+    return root == venv or venv in root.parents
+
+
+def _print_manual_hint(spec: ToolSpec) -> None:
+    status = "required" if spec.required else "optional"
+    names = " and ".join(spec.binaries)
+    noun = "binary" if len(spec.binaries) == 1 else "binaries"
+    pronoun = "it" if len(spec.binaries) == 1 else "them"
+    tool = "tool" if len(spec.binaries) == 1 else "tools"
+    print(f"{spec.label} is {status}. Install {pronoun} with your system's "
+          f"package manager first, or download the {names} {noun} from the "
+          f"official {spec.label} website and install {pronoun} manually.")
+    print(f"If you don't wish to install the {tool} system-wide or add "
+          f"{pronoun} to PATH, you may place the {noun} in the bin folder: "
+          f"{bin_dir()}.")
+    if _is_pipx_install():
+        print(f"With pipx, the package folder is {project_root()}, inside the "
+              f"pipx environment. Its bin folder is {bin_dir()}.")
+        print("Upgrading clipshrink may replace files there.")
+    if not spec.required:
+        print("Continuing with the rest of the installation.")
+
+
 def install_backends(missing: list[ToolSpec],
                      bin_path: Path | None = None,
                      links: dict[str, BinaryLinks] | None = None) -> list[str]:
@@ -1043,6 +1115,7 @@ def install_backends(missing: list[ToolSpec],
     for spec in missing:
         tool_links = links.get(spec.label)
         primary, mirror = platform_links(tool_links)
+        sha256, sha256_mirror = platform_checksums(tool_links)
         tool_start = time.monotonic()
         if spec.label == "libvips":
             # pyvips-first: wheel, prebuilt binary, source build. Handles its
@@ -1053,14 +1126,19 @@ def install_backends(missing: list[ToolSpec],
                 print(f"{'Updated' if was_update else 'Installed'} libvips "
                       f"({format_duration(time.monotonic() - tool_start)}).")
                 installed.append(spec.label)
+            else:
+                _print_manual_hint(spec)
             continue
         if not (primary or mirror):
             print(f"Skipping {spec.label}: no automatic download is "
                   "available for this platform.")
+            _print_manual_hint(spec)
             continue
         was_update = spec.label in versions
-        if not _install_one(spec, BinaryLinks(url=primary, mirror=mirror),
-                            bin_path, versions):
+        downloads = BinaryLinks(url=primary, mirror=mirror,
+                                sha256=sha256, sha256_mirror=sha256_mirror)
+        if not _install_one(spec, downloads, bin_path, versions):
+            _print_manual_hint(spec)
             continue
         if find_bin_tool(bin_path, spec.binaries) is not None:
             print(f"{'Updated' if was_update else 'Installed'} "
@@ -1071,6 +1149,7 @@ def install_backends(missing: list[ToolSpec],
             print(f"Error installing {spec.label}: "
                   f"{spec.binaries[0]} not found in the archive.")
             versions.pop(spec.label, None)
+            _print_manual_hint(spec)
     save_installed_versions(bin_path, versions)
     if installed:
         print(f"Install complete: {len(installed)} tool(s) in "

@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import subprocess
@@ -303,7 +304,7 @@ def test_install_deps_refreshes_cached_backend_detection(monkeypatch: pytest.Mon
         monkeypatch.setattr(deps, "install_python_deps", lambda **kw: True)
         monkeypatch.setattr(deps, "is_windows", lambda: True)
         monkeypatch.setattr(deps, "load_binaries", lambda: {})
-        spec = deps.ToolSpec("ImageMagick", ("magick",), "imagemagick")
+        spec = deps.ToolSpec("ImageMagick", ("magick",), required=True)
         monkeypatch.setattr(deps, "missing_backends",
                             lambda backend, bin_path=None: [spec])
         monkeypatch.setattr(deps, "outdated_backends",
@@ -690,9 +691,9 @@ def test_warn_backends_posix_lists_missing_and_hints(tmp_path: Path,
     deps.warn_backends_posix(_backend(os_type="X11"), tmp_path)
     out = capsys.readouterr().out
     assert "Warning: missing backend tools:" in out
-    assert "ImageMagick: imagemagick" in out
-    assert "pngquant: pngquant" in out
-    assert "waifu2x-ncnn-vulkan" in out
+    assert "your system's package manager" in out
+    assert "official project websites" in out
+    assert out.index("your system's package manager") < out.index("official project websites")
 
 
 def test_warn_backends_posix_silent_when_complete(tmp_path: Path,
@@ -786,6 +787,28 @@ def test_download_file_writes_payload(tmp_path: Path, monkeypatch: pytest.Monkey
     assert dest.read_bytes() == payload
 
 
+def test_verify_checksum_accepts_matching_digest(tmp_path: Path):
+    path = tmp_path / "tool.zip"
+    path.write_bytes(b"payload")
+    expected = hashlib.sha256(b"payload").hexdigest()
+    deps.verify_checksum(path, expected)
+    deps.verify_checksum(path, expected.upper())
+
+
+def test_verify_checksum_rejects_mismatch(tmp_path: Path):
+    path = tmp_path / "tool.zip"
+    path.write_bytes(b"payload")
+    with pytest.raises(deps.DepsError, match="checksum mismatch"):
+        deps.verify_checksum(path, "0" * 64)
+
+
+def test_verify_checksum_rejects_missing_digest(tmp_path: Path):
+    path = tmp_path / "tool.zip"
+    path.write_bytes(b"payload")
+    with pytest.raises(deps.DepsError, match="no checksum"):
+        deps.verify_checksum(path, "")
+
+
 def test_extract_archive_zip(tmp_path: Path):
     archive = tmp_path / "tool.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -865,6 +888,128 @@ def test_install_backends_downloads_extracts_merges(tmp_path: Path,
     assert deps.find_bin_tool(bin_path, ("tool",)) is not None
 
 
+def test_install_backends_verifies_checksum(tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch):
+    archive = tmp_path / "tool-1.0.zip"
+    _write_tool_archive(archive)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    monkeypatch.setattr(deps, "download_file",
+                        lambda url, dest: dest.write_bytes(archive.read_bytes()))
+    bin_path = tmp_path / "bin"
+    spec = deps.ToolSpec("TestTool", ("tool",))
+    links = {"TestTool": deps.BinaryLinks(
+        url="https://example/tool-1.0.zip", sha256=digest,
+        url_linux="https://example/tool-1.0.zip", sha256_linux=digest)}
+    assert deps.install_backends([spec], bin_path, links=links) == ["TestTool"]
+    assert deps.find_bin_tool(bin_path, ("tool",)) is not None
+
+
+def test_install_backends_rejects_bad_checksum(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]):
+    archive = tmp_path / "tool-1.0.zip"
+    _write_tool_archive(archive)
+    monkeypatch.setattr(deps, "download_file",
+                        lambda url, dest: dest.write_bytes(archive.read_bytes()))
+    bin_path = tmp_path / "bin"
+    spec = deps.ToolSpec("TestTool", ("tool",))
+    links = {"TestTool": deps.BinaryLinks(
+        url="https://example/tool-1.0.zip", sha256="0" * 64,
+        url_linux="https://example/tool-1.0.zip", sha256_linux="0" * 64)}
+    assert deps.install_backends([spec], bin_path, links=links) == []
+    assert "checksum mismatch" in capsys.readouterr().out
+    assert deps.find_bin_tool(bin_path, ("tool",)) is None
+
+
+def test_install_backends_warns_without_checksum(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]):
+    monkeypatch.setattr(deps, "download_file",
+                        lambda url, dest: _write_tool_archive(dest))
+    bin_path = tmp_path / "bin"
+    spec = deps.ToolSpec("TestTool", ("tool",))
+    assert deps.install_backends(
+        [spec], bin_path,
+        links=_links("TestTool", "https://example/tool-1.0.zip")) == ["TestTool"]
+    assert "no checksum" in capsys.readouterr().out
+
+
+def test_install_backends_hints_optional_failure_and_continues(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]):
+    def fake_download(url: str, dest: Path) -> None:
+        if "bad" in url:
+            dest.write_bytes(b"not a zip")
+        else:
+            _write_tool_archive(dest)
+
+    monkeypatch.setattr(deps, "download_file", fake_download)
+    bad = deps.ToolSpec("BadTool", ("bad",))
+    good = deps.ToolSpec("OtherTool", ("tool",))
+    links = {
+        **_links("BadTool", "https://example/bad.zip"),
+        **_links("OtherTool", "https://example/other.zip"),
+    }
+    installed = deps.install_backends(
+        [bad, good], tmp_path / "bin", links=links)
+    assert installed == ["OtherTool"]
+    out = capsys.readouterr().out
+    assert "BadTool is optional" in out
+    assert "system's package manager" in out
+    assert "official BadTool website" in out
+    assert out.index("system's package manager") < out.index("official BadTool website")
+    assert "Continuing with the rest of the installation." in out
+    assert "Installed OtherTool" in out
+
+
+def test_install_backends_hints_required_failure(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]):
+    monkeypatch.setattr(deps, "download_file",
+                        lambda url, dest: dest.write_bytes(b"not a zip"))
+    spec = deps.ToolSpec("ImageMagick", ("magick",), required=True)
+    assert deps.install_backends(
+        [spec], tmp_path / "bin",
+        links=_links("ImageMagick", "https://example/magick.zip")) == []
+    out = capsys.readouterr().out
+    assert "ImageMagick is required" in out
+    assert "magick binary" in out
+    assert "system's package manager" in out
+    assert "official ImageMagick website" in out
+    assert out.index("system's package manager") < out.index("official ImageMagick website")
+    assert "Continuing with the rest of the installation." not in out
+
+
+def test_manual_hint_includes_bin_folder(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]):
+    monkeypatch.setattr(deps, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(deps.sys, "prefix", str(tmp_path))
+    deps._print_manual_hint(deps.ToolSpec("BadTool", ("bad",)))
+    out = capsys.readouterr().out
+    assert "may place the binary in the bin folder" in out
+    assert str(tmp_path / "bin") in out
+    assert "With pipx" not in out
+
+
+def test_manual_hint_teaches_pipx_bin_folder(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]):
+    venv = tmp_path / "pipx-venv"
+    site = venv / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    (venv / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(deps.sys, "prefix", str(venv))
+    monkeypatch.setattr(deps, "project_root", lambda: site)
+    deps._print_manual_hint(deps.ToolSpec("BadTool", ("bad",)))
+    out = capsys.readouterr().out
+    assert "may place the binary in the bin folder" in out
+    assert str(site / "bin") in out
+    assert "With pipx, the package folder is" in out
+    assert "Its bin folder is" in out
+    assert "Upgrading clipshrink may replace files there." in out
+
+
 def test_install_backends_reports_bad_archive(tmp_path: Path,
                                               monkeypatch: pytest.MonkeyPatch,
                                               capsys: pytest.CaptureFixture[str]):
@@ -901,21 +1046,27 @@ def test_load_binaries_reads_links(tmp_path: Path):
     path = tmp_path / "binaries.json"
     path.write_text(json.dumps({
         "pngquant": {"url": "https://example/a.zip",
+                     "sha256": "a" * 64,
                      "mirror": "https://mirror.example/b.zip",
-                     "url_linux": "https://example/a-linux.tar.bz2"},
+                     "sha256_mirror": "b" * 64,
+                     "url_linux": "https://example/a-linux.tar.bz2",
+                     "sha256_linux": "c" * 64},
         "ffmpeg": {"url": "https://example/f.zip"},
         "broken": "not a dict",
         "badtype": {"url": 3},
         "badlinux": {"url": "https://example/x.zip", "url_linux": 7},
+        "badsha": {"url": "https://example/x.zip", "sha256": 7},
     }), encoding="utf-8")
     links = deps.load_binaries(path)
     assert links["pngquant"] == deps.BinaryLinks(
         url="https://example/a.zip", mirror="https://mirror.example/b.zip",
-        url_linux="https://example/a-linux.tar.bz2", mirror_linux="")
+        url_linux="https://example/a-linux.tar.bz2", mirror_linux="",
+        sha256="a" * 64, sha256_mirror="b" * 64,
+        sha256_linux="c" * 64)
     assert links["ffmpeg"] == deps.BinaryLinks(url="https://example/f.zip",
                                                mirror="")
     assert "broken" not in links and "badtype" not in links
-    assert "badlinux" not in links
+    assert "badlinux" not in links and "badsha" not in links
 
 
 def test_load_binaries_missing_or_malformed_yields_empty(tmp_path: Path):
@@ -928,12 +1079,28 @@ def test_load_binaries_missing_or_malformed_yields_empty(tmp_path: Path):
     assert deps.load_binaries(arr) == {}
 
 
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
 def test_repo_binaries_file_covers_every_tool():
     links = deps.load_binaries()
     for spec in deps.BACKEND_TOOLS:
         assert spec.label in links, spec.label
-        assert links[spec.label].url, spec.label
-        assert links[spec.label].url_linux, spec.label
+        entry = links[spec.label]
+        assert entry.url, spec.label
+        assert entry.url_linux, spec.label
+        assert _is_sha256(entry.sha256), spec.label
+        assert _is_sha256(entry.sha256_linux), spec.label
+        if entry.mirror:
+            assert _is_sha256(entry.sha256_mirror), spec.label
+        if entry.mirror_linux:
+            assert _is_sha256(entry.sha256_mirror_linux), spec.label
+
+
+def test_only_imagemagick_is_required():
+    required = [spec.label for spec in deps.BACKEND_TOOLS if spec.required]
+    assert required == ["ImageMagick"]
 
 
 def _links(label: str, url: str, mirror: str = "") -> dict[str, deps.BinaryLinks]:
@@ -1094,6 +1261,41 @@ def test_install_deps_all_current_when_nothing_missing_or_outdated(
     monkeypatch.setattr(deps, "outdated_backends", lambda bin_path=None, links=None: [])
     assert main("--install-deps") == 0
     assert "All backend tools are already installed." in capsys.readouterr().out
+
+
+def test_install_deps_optional_failure_does_not_fail_run(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    import clipshrink as entry
+
+    monkeypatch.setattr(deps, "is_in_venv", lambda: True)
+    monkeypatch.setattr(deps, "install_python_deps", lambda **kw: True)
+    spec = deps.ToolSpec("pngquant", ("pngquant",))
+    monkeypatch.setattr(deps, "missing_backends",
+                        lambda backend, bin_path=None: [spec])
+    monkeypatch.setattr(deps, "outdated_backends",
+                        lambda bin_path=None, links=None: [])
+    monkeypatch.setattr(deps, "install_backends", lambda *a, **kw: [])
+
+    assert entry._run_install_deps() is True
+    assert "Required tool(s) failed to install" not in capsys.readouterr().out
+
+
+def test_install_deps_required_failure_marks_run_failed(
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    import clipshrink as entry
+
+    monkeypatch.setattr(deps, "is_in_venv", lambda: True)
+    monkeypatch.setattr(deps, "install_python_deps", lambda **kw: True)
+    spec = deps.ToolSpec("ImageMagick", ("magick",), required=True)
+    monkeypatch.setattr(deps, "missing_backends",
+                        lambda backend, bin_path=None: [spec])
+    monkeypatch.setattr(deps, "outdated_backends",
+                        lambda bin_path=None, links=None: [])
+    monkeypatch.setattr(deps, "install_backends", lambda *a, **kw: [])
+
+    assert entry._run_install_deps() is False
+    assert "Required tool(s) failed to install: ImageMagick" in \
+        capsys.readouterr().out
 
 
 def test_venv_flow_creation_failure_is_clean(monkeypatch: pytest.MonkeyPatch,
@@ -1281,6 +1483,21 @@ def test_platform_links_selection(monkeypatch: pytest.MonkeyPatch):
     assert deps.platform_links(None) == ("", "")
     monkeypatch.setattr(deps, "is_macos", lambda: False)
     assert deps.platform_links(deps.BinaryLinks(url="w.zip")) == ("", "")
+
+
+def test_platform_checksums_selection(monkeypatch: pytest.MonkeyPatch):
+    links = deps.BinaryLinks(sha256="w", sha256_mirror="wm",
+                             sha256_linux="l", sha256_mirror_linux="lm")
+    monkeypatch.setattr(deps, "is_windows", lambda: True)
+    assert deps.platform_checksums(links) == ("w", "wm")
+    monkeypatch.setattr(deps, "is_windows", lambda: False)
+    monkeypatch.setattr(deps, "is_macos", lambda: False)
+    assert deps.platform_checksums(links) == ("l", "lm")
+    monkeypatch.setattr(deps, "is_macos", lambda: True)
+    assert deps.platform_checksums(links) == ("", "")
+    assert deps.platform_checksums(None) == ("", "")
+    monkeypatch.setattr(deps, "is_macos", lambda: False)
+    assert deps.platform_checksums(deps.BinaryLinks(url="w.zip")) == ("", "")
 
 
 _NEEDS_POSIX = pytest.mark.skipif(
@@ -1541,8 +1758,8 @@ def test_build_vips_from_source_failure_cleans_up_and_hints_package_manager(
 
 
 def _posix_missing_specs() -> list[deps.ToolSpec]:
-    return [deps.ToolSpec("libvips", ("vips",), "libvips-tools"),
-            deps.ToolSpec("OtherTool", ("other",), None)]
+    return [deps.ToolSpec("libvips", ("vips",)),
+            deps.ToolSpec("OtherTool", ("other",))]
 
 
 def test_check_backends_posix_prompts_and_installs(
@@ -1586,8 +1803,8 @@ def test_check_backends_posix_decline_falls_back_to_hints(
                           pngquant=False, realesrgan=False, waifu2x=False)
     assert deps.check_backends_posix(backend, False, tmp_path) is False
     out = capsys.readouterr().out
-    assert "package manager" in out
-    assert "libvips: libvips-tools" in out
+    assert "your system's package manager" in out
+    assert "official project websites" in out
 
 
 @_NEEDS_POSIX
