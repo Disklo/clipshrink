@@ -1298,6 +1298,15 @@ def test_install_deps_required_failure_marks_run_failed(
         capsys.readouterr().out
 
 
+def test_main_warns_on_raw_with_processing_flags(
+        capsys: pytest.CaptureFixture[str]):
+    assert main("--raw", "--strip-metadata", "-i", "missing.png",
+                "-o", "out.png") == 1
+    out = capsys.readouterr().out
+    assert "--raw skips all processing" in out
+    assert "--strip-metadata" in out
+
+
 def test_venv_flow_creation_failure_is_clean(monkeypatch: pytest.MonkeyPatch,
                                              tmp_path: Path,
                                              capsys: pytest.CaptureFixture[str]):

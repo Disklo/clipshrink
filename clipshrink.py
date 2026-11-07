@@ -15,7 +15,7 @@ from core.cli import create_parser, parse_cli_args
 from core.deps import VENV_DIRNAME
 from core.fileops import collect_images, compute_output_name, is_image_file
 from core.pipeline import process_image
-from core.validation import ValidationError, validate_flags
+from core.validation import ValidationError, validate_flags, warn_flag_conflicts
 
 # flags that aren't image work for --install-deps
 _INSTALL_ONLY_FLAGS = frozenset({
@@ -363,6 +363,8 @@ def main(*argv: str) -> int:
     except ValidationError as e:
         print(f"Error: {e}")
         return 1
+
+    warn_flag_conflicts(provided)
 
     if not args.install_deps:
         venv_notice = not args.venv_skip and not config.get("skip_venv", False)

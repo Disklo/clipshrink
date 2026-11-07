@@ -6,6 +6,7 @@ import pytest
 
 from core import pipeline
 from core.cli import create_parser
+from core.validation import warn_flag_conflicts
 
 
 def parse(*argv):
@@ -74,6 +75,49 @@ def test_validate_flags_speed_modes_conflict():
         pipeline.validate_flags(parse("--fast", "--slowest"))
     with pytest.raises(pipeline.ValidationError):
         pipeline.validate_flags(parse("--slow", "--slowest"))
+
+
+def test_validate_flags_image_modes_conflict():
+    for argv in (("-p", "-d"), ("-p", "-x"), ("-d", "-x"),
+                 ("-p", "-d", "-x")):
+        with pytest.raises(pipeline.ValidationError, match="mutually exclusive"):
+            pipeline.validate_flags(parse(*argv))
+    for flag in ("-p", "-d", "-x"):
+        assert pipeline.validate_flags(parse(flag)) is None
+
+
+def test_warn_raw_lists_ignored_processing_flags(capsys):
+    warn_flag_conflicts({"raw", "strip_metadata", "format", "max_size"})
+    out = capsys.readouterr().out
+    assert "--raw skips all processing" in out
+    assert "--strip-metadata" in out
+    assert "-F/--format" in out
+    assert "-s/--max-size" in out
+
+
+def test_warn_raw_allows_io_and_batch_flags(capsys):
+    warn_flag_conflicts({"raw", "input", "output", "recursive", "jobs",
+                         "no_suffix", "dry_run"})
+    assert capsys.readouterr().out == ""
+
+
+def test_warn_conversion_only_overrides_only_flags(capsys):
+    warn_flag_conflicts({"conversion_only", "only_resize", "only_pngquant"})
+    out = capsys.readouterr().out
+    assert "--conversion-only overrides" in out
+    assert "--only-resize" in out
+    assert "--only-pngquant" in out
+
+
+def test_warn_only_flag_overrides_matching_skip(capsys):
+    warn_flag_conflicts({"only_resize", "skip_resize"})
+    out = capsys.readouterr().out
+    assert "--only-resize overrides --skip-resize" in out
+
+
+def test_warn_does_not_confuse_unmatched_only_skip(capsys):
+    warn_flag_conflicts({"only_resize", "skip_pngquant"})
+    assert capsys.readouterr().out == ""
 
 
 def test_resolve_processing_toggles_defaults():

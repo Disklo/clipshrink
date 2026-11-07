@@ -21,6 +21,56 @@ class _Toggles:
     iterative: bool
 
 
+_RAW_IGNORED = (
+    ("photo", "-p/--photo"),
+    ("drawing", "-d/--drawing"),
+    ("pixel_art", "-x/--pixel-art"),
+    ("dithering", "--dithering/--no-dithering"),
+    ("nearest", "--nearest/--no-nearest"),
+    ("snap", "--snap/--no-snap"),
+    ("realesrgan_model", "--realesrgan-model"),
+    ("realesrgan", "--realesrgan"),
+    ("waifu2x", "--waifu2x"),
+    ("max_size", "-s/--max-size"),
+    ("ssim_target", "--ssim-target"),
+    ("max_width", "-w/--max-width"),
+    ("max_height", "-H/--max-height"),
+    ("integer_scaling", "-I/--integer-scaling"),
+    ("format", "-F/--format"),
+    ("quality", "-q/--quality"),
+    ("min_quality", "-Q/--min-quality"),
+    ("upscale", "-u/--upscale"),
+    ("manual_skipping", "-m/--manual-skipping"),
+    ("filter", "-f/--filter"),
+    ("conversion_only", "--conversion-only"),
+    ("skip_resize", "--skip-resize"),
+    ("skip_pngquant", "--skip-pngquant"),
+    ("skip_iterative", "--skip-iterative"),
+    ("only_resize", "--only-resize"),
+    ("only_pngquant", "--only-pngquant"),
+    ("only_iterative", "--only-iterative"),
+    ("strip_metadata", "--strip-metadata"),
+    ("subsampling", "--subsampling"),
+    ("slow", "--slow"),
+    ("fast", "--fast"),
+    ("slowest", "--slowest"),
+    ("search_step", "--search-step"),
+    ("color_step", "--color-step"),
+    ("max_iterations", "--max-iterations"),
+    ("avif_speed", "--avif-speed"),
+    ("pngquant_speed", "--pngquant-speed"),
+    ("oxipng_level", "--oxipng-level"),
+    ("no_oxipng", "--no-oxipng"),
+    ("frontier", "--frontier/--no-frontier"),
+    ("frontier_levels", "--frontier-levels"),
+    ("frontier_ceiling", "--frontier-ceiling"),
+    ("deep_step", "--deep-step"),
+    ("ssim", "--ssim/--no-ssim"),
+    ("compare_subsampling", "--compare-subsampling/--no-compare-subsampling"),
+    ("prefer_software", "--prefer-software-codecs/--no-prefer-software-codecs"),
+)
+
+
 def validate_flags(args: Args) -> None:
     if args.integer_scaling is not None and (
         args.max_width is not None or args.max_height is not None
@@ -39,6 +89,9 @@ def validate_flags(args: Args) -> None:
         raise ValidationError("--jobs must be at least 1")
     if sum(bool(getattr(args, f, False)) for f in ("fast", "slow", "slowest")) > 1:
         raise ValidationError("--slow, --fast and --slowest are mutually exclusive")
+    if sum(bool(getattr(args, f, False)) for f in ("photo", "drawing", "pixel_art")) > 1:
+        raise ValidationError(
+            "-p/--photo, -d/--drawing and -x/--pixel-art are mutually exclusive")
     if getattr(args, "venv", None) and getattr(args, "venv_skip", False):
         raise ValidationError("--venv and --venv-skip are mutually exclusive")
 
@@ -100,6 +153,32 @@ def validate_flags(args: Args) -> None:
         raise ValidationError("--conversion-only requires --format")
     if (uses_realesrgan or uses_waifu2x) and resolve_image_mode(args) == "pixel_art":
         raise ValidationError("Neural upscalers cannot be used in Pixel Art mode.")
+
+
+def warn_flag_conflicts(provided: set[str]) -> None:
+    if "raw" in provided:
+        ignored = [flag for dest, flag in _RAW_IGNORED if dest in provided]
+        if ignored:
+            print("Warning: --raw skips all processing; these flags have no "
+                  "effect: " + ", ".join(ignored) + ".")
+    if "conversion_only" in provided:
+        only_flags = [flag for dest, flag in (
+            ("only_resize", "--only-resize"),
+            ("only_pngquant", "--only-pngquant"),
+            ("only_iterative", "--only-iterative"),
+        ) if dest in provided]
+        if only_flags:
+            print("Warning: --conversion-only overrides "
+                  + ", ".join(only_flags)
+                  + "; the only-* flags have no effect.")
+    for only_dest, skip_dest, only_flag, skip_flag in (
+        ("only_resize", "skip_resize", "--only-resize", "--skip-resize"),
+        ("only_pngquant", "skip_pngquant", "--only-pngquant", "--skip-pngquant"),
+        ("only_iterative", "skip_iterative", "--only-iterative", "--skip-iterative"),
+    ):
+        if only_dest in provided and skip_dest in provided:
+            print(f"Warning: {only_flag} overrides {skip_flag}; "
+                  "the skip flag has no effect.")
 
 
 def resolve_image_mode(args: Args) -> str:
