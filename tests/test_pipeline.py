@@ -138,6 +138,49 @@ def test_check_bypass_under_size_same_format(tmp_path, measurements):
     assert pipeline.check_bypass(img, pipeline._build_config(parse("-s", "1m"))) is True
 
 
+def test_check_bypass_strip_metadata_forces_processing(tmp_path, measurements):
+    img = tmp_path / "x.png"
+    img.write_bytes(b"x")
+    cfg = pipeline._build_config(parse("-s", "1m", "--strip-metadata"))
+    assert pipeline.check_bypass(img, cfg) is False
+
+
+def test_strip_metadata_pass_uses_convert_format(monkeypatch, tmp_path):
+    calls = []
+    out = tmp_path / "out.png"
+
+    def fake_convert(src, dst, fmt, quality=95, strip_metadata=False):
+        calls.append((Path(src), Path(dst), fmt, quality, strip_metadata))
+        Path(dst).write_bytes(b"x")
+        return True
+
+    monkeypatch.setattr(pipeline, "convert_format", fake_convert)
+    monkeypatch.setattr(pipeline, "_make_temp", lambda suffix: out)
+    src = tmp_path / "in.png"
+    src.write_bytes(b"x")
+
+    assert pipeline._strip_metadata_pass(src, "PNG", animated=False) == out
+    assert calls == [(src, out, "PNG", pipeline._CONVERSION_QUALITY, True)]
+
+
+def test_strip_metadata_pass_uses_convert_animation(monkeypatch, tmp_path):
+    calls = []
+    out = tmp_path / "out.gif"
+
+    def fake_convert(src, dst, quality=95, strip_metadata=False):
+        calls.append((Path(src), Path(dst), quality, strip_metadata))
+        Path(dst).write_bytes(b"x")
+        return True
+
+    monkeypatch.setattr(pipeline, "convert_animation", fake_convert)
+    monkeypatch.setattr(pipeline, "_make_temp", lambda suffix: out)
+    src = tmp_path / "in.gif"
+    src.write_bytes(b"x")
+
+    assert pipeline._strip_metadata_pass(src, "GIF", animated=True) == out
+    assert calls == [(src, out, pipeline._CONVERSION_QUALITY, True)]
+
+
 def test_check_bypass_over_size(measurements):
     def big_measure(image_path):
         return {"width": 100, "height": 100, "format": "PNG", "size": 3 * 1024 * 1024}
@@ -1241,6 +1284,47 @@ def test_process_image_still_gif_uses_static_pipeline(monkeypatch, tmp_path, cap
     assert result["success"] is True
     assert calls == ["resize"]
     assert "only the first frame" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flag", ["--only-resize", "--only-pngquant",
+                                  "--skip-iterative"])
+def test_process_image_strips_metadata_after_skipped_phases(
+        monkeypatch, tmp_path, flag):
+    img = tmp_path / "in.png"
+    img.write_bytes(b"x")
+    out = tmp_path / "out.png"
+    calls = []
+
+    monkeypatch.setattr(pipeline, "measure_image",
+                        lambda p: {"width": 100, "height": 100,
+                                   "format": "PNG", "size": 100})
+    monkeypatch.setattr(pipeline, "_get_backend", lambda: _backend_stub())
+    monkeypatch.setattr(pipeline, "_is_animated", lambda p: False)
+    monkeypatch.setattr(pipeline, "to_png_lossless",
+                        lambda i, o: (o.write_bytes(b"p") or True))
+    monkeypatch.setattr(pipeline.converters, "_has_png_magic", lambda p: False)
+    monkeypatch.setattr(pipeline, "run_resize_phase",
+                        lambda inp, cfg, m, t: inp)
+    monkeypatch.setattr(pipeline, "run_pngquant_phase",
+                        lambda inp, cfg, t, **k: inp)
+    monkeypatch.setattr(pipeline, "run_iterative_phase",
+                        lambda inp, cfg, m, t, target=None: inp)
+    monkeypatch.setattr(pipeline, "run_format_conversion",
+                        lambda inp, cfg, m, target=None: inp)
+
+    def fake_strip(source, target_format, animated):
+        calls.append((source, target_format, animated))
+        stripped = tmp_path / "stripped.png"
+        stripped.write_bytes(b"s")
+        return stripped
+
+    monkeypatch.setattr(pipeline, "_strip_metadata_pass", fake_strip)
+    result = pipeline.process_image(
+        img, parse("-o", str(out), "-s", "2m", flag, "--strip-metadata"))
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert calls[0][1:] == ("PNG", False)
+    assert out.read_bytes() == b"s"
 
 
 def test_process_image_animated_avif_to_gif_routes_to_animated_phase(

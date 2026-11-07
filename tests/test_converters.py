@@ -95,6 +95,26 @@ def test_avif_save_prefers_avifenc(monkeypatch, tmp_path):
     cmd = captured["cmd"]
     assert cmd[0] == "avifenc"
     assert cmd[1:5] == ["-q", "80", "--speed", "1"]
+    assert "--ignore-exif" not in cmd
+
+
+def test_avif_save_strips_metadata_with_avifenc(monkeypatch, tmp_path):
+    from core import converters
+
+    captured = {}
+    src = tmp_path / "in.png"
+    src.write_bytes(b"x")
+
+    monkeypatch.setattr(converters.shutil, "which",
+                        lambda c: "/usr/bin/avifenc" if c == "avifenc" else None)
+    monkeypatch.setattr(converters, "run_capture",
+                        lambda cmd, **k: captured.update(cmd=cmd) or _ok_result())
+    out = tmp_path / "out.avif"
+    assert avif_save(src, out, 80, strip_metadata=True) is True
+    cmd = captured["cmd"]
+    assert "--ignore-exif" in cmd
+    assert "--ignore-xmp" in cmd
+    assert "--ignore-profile" in cmd
 
 
 def test_avif_save_uses_hardware_codec_when_available(monkeypatch, tmp_path):

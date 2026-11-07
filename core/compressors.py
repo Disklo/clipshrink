@@ -491,9 +491,9 @@ def _art_strategy(
         deep_resize_from_original=frontier,
         palette=True,
         palette_pass=probe_encode,
-        entry_size_guard=True,
+        entry_size_guard=not strip_metadata,
         collect_candidates=frontier,
-        prefer_current_if_fits=True,
+        prefer_current_if_fits=not strip_metadata,
         optimizer_label="Best" if frontier else "Iterative",
         extra_candidates=ceiling_fit if (frontier and container_corrected) else None,
         select_winner=(lambda cands, ref, reg: _rank_art_candidates(

@@ -684,10 +684,14 @@ def _avif_hw_codec() -> str:
 
 
 def _avifenc_encode(input_path: Path, output_path: Path, quality: int,
-                    speed: int, hw_codec: str) -> subprocess.CompletedProcess[str]:
+                    speed: int, hw_codec: str,
+                    strip_metadata: bool = False,
+                    ) -> subprocess.CompletedProcess[str]:
     # -q is monotone in size. deprecated --min/--max quantizer bounds
     # saturate at 63 and silently cap quality.
     cmd = ["avifenc", "-q", str(quality), "--speed", str(speed)]
+    if strip_metadata:
+        cmd.extend(["--ignore-exif", "--ignore-xmp", "--ignore-profile"])
     if hw_codec:
         cmd.extend(["--codec", hw_codec])
     cmd.extend(["-o", str(output_path), str(input_path)])
@@ -713,7 +717,8 @@ def avif_save(
         if hw_codec and prefer_software:
             codecs.append(hw_codec)
         for codec in codecs:
-            result = _avifenc_encode(input_path, output_path, quality, speed, codec)
+            result = _avifenc_encode(input_path, output_path, quality, speed,
+                                     codec, strip_metadata=strip_metadata)
             if result.returncode == 0:
                 return True
         return False

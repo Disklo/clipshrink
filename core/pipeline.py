@@ -378,7 +378,10 @@ def check_bypass(image_path: Path, cfg: _Config,
     )
     needs_resize = flag_any or is_upscale
 
-    return bool(not is_upscale and not needs_resize and size <= cfg.max_size_bytes and fmt == resolved_target)
+    return bool(not is_upscale and not needs_resize
+                and not cfg.strip_metadata
+                and size <= cfg.max_size_bytes
+                and fmt == resolved_target)
 
 
 # pyvips caches by filename, never overwrite a loaded file (stale dims).
@@ -401,31 +404,42 @@ def _upscale_pass(current: Path, cfg: _Config, width: int, height: int,
                 hp = int((max_h / height) * 100)
                 if wp == hp:
                     current, width, height = _resize_step(
-                        current, lambda src, out: sample_pct(src, out, wp))
+                        current, lambda src, out: sample_pct(
+                            src, out, wp, strip_metadata=cfg.strip_metadata))
                 else:
                     current, width, height = _resize_step(
                         current,
-                        lambda src, out: resize_exact(src, out, max_w, max_h, "Point"))
+                        lambda src, out: resize_exact(
+                            src, out, max_w, max_h, "Point",
+                            strip_metadata=cfg.strip_metadata))
             else:
                 current, width, height = _resize_step(
                     current,
-                    lambda src, out: resize_exact(src, out, max_w, max_h, cfg.filter))
+                    lambda src, out: resize_exact(
+                        src, out, max_w, max_h, cfg.filter,
+                        strip_metadata=cfg.strip_metadata))
     elif max_w is not None and width != max_w:
         if cfg.nearest:
             current, width, height = _resize_step(
                 current, lambda src, out: sample_pct(
-                    src, out, int((max_w / width) * 100)))
+                    src, out, int((max_w / width) * 100),
+                    strip_metadata=cfg.strip_metadata))
         else:
             current, width, height = _resize_step(
-                current, lambda src, out: resize_fit_width(src, out, max_w, cfg.filter))
+                current, lambda src, out: resize_fit_width(
+                    src, out, max_w, cfg.filter,
+                    strip_metadata=cfg.strip_metadata))
     elif max_h is not None and height != max_h:
         if cfg.nearest:
             current, width, height = _resize_step(
                 current, lambda src, out: sample_pct(
-                    src, out, int((max_h / height) * 100)))
+                    src, out, int((max_h / height) * 100),
+                    strip_metadata=cfg.strip_metadata))
         else:
             current, width, height = _resize_step(
-                current, lambda src, out: resize_fit_height(src, out, max_h, cfg.filter))
+                current, lambda src, out: resize_fit_height(
+                    src, out, max_h, cfg.filter,
+                    strip_metadata=cfg.strip_metadata))
     elif is_integer_scaling and scale_val is not None:
         if cfg.nn_scaler is not None:
             target_w = int(orig_width * scale_val / 100)
@@ -433,13 +447,17 @@ def _upscale_pass(current: Path, cfg: _Config, width: int, height: int,
                 print(f"-> Fine-tuning neural output to exact scale {scale_val}%...")
                 current, width, height = _resize_step(
                     current, lambda src, out: resize_fit_width(
-                        src, out, target_w, cfg.filter))
+                        src, out, target_w, cfg.filter,
+                        strip_metadata=cfg.strip_metadata))
         elif cfg.nearest:
             current, width, height = _resize_step(
-                current, lambda src, out: sample_pct(src, out, scale_val))
+                current, lambda src, out: sample_pct(
+                    src, out, scale_val, strip_metadata=cfg.strip_metadata))
         else:
             current, width, height = _resize_step(
-                current, lambda src, out: resize_pct(src, out, scale_val, cfg.filter))
+                current, lambda src, out: resize_pct(
+                    src, out, scale_val, cfg.filter,
+                    strip_metadata=cfg.strip_metadata))
     return current, width, height
 
 
@@ -452,38 +470,51 @@ def _downscale_pass(current: Path, cfg: _Config, width: int, height: int,
         if cfg.nearest:
             current, width, height = _resize_step(
                 current,
-                lambda src, out: resize_exact(src, out, max_w, max_h, "Point"))
+                lambda src, out: resize_exact(
+                    src, out, max_w, max_h, "Point",
+                    strip_metadata=cfg.strip_metadata))
         else:
             current, width, height = _resize_step(
                 current,
-                lambda src, out: resize_exact(src, out, max_w, max_h, cfg.filter))
+                lambda src, out: resize_exact(
+                    src, out, max_w, max_h, cfg.filter,
+                    strip_metadata=cfg.strip_metadata))
     elif max_w is not None and width > max_w:
         if cfg.nearest:
             print(f"-> Iteratively halving (50%) until width <= {max_w}...")
             while width > max_w and not utils._aborted:
                 current, width, height = _resize_step(
-                    current, lambda src, out: sample_pct(src, out, 50))
+                    current, lambda src, out: sample_pct(
+                        src, out, 50, strip_metadata=cfg.strip_metadata))
                 utils._abort_if_interrupted()
         else:
             current, width, height = _resize_step(
-                current, lambda src, out: resize_fit_width(src, out, max_w, cfg.filter))
+                current, lambda src, out: resize_fit_width(
+                    src, out, max_w, cfg.filter,
+                    strip_metadata=cfg.strip_metadata))
     elif max_h is not None and height > max_h:
         if cfg.nearest:
             print(f"-> Iteratively halving (50%) until height <= {max_h}...")
             while height > max_h and not utils._aborted:
                 current, width, height = _resize_step(
-                    current, lambda src, out: sample_pct(src, out, 50))
+                    current, lambda src, out: sample_pct(
+                        src, out, 50, strip_metadata=cfg.strip_metadata))
                 utils._abort_if_interrupted()
         else:
             current, width, height = _resize_step(
-                current, lambda src, out: resize_fit_height(src, out, max_h, cfg.filter))
+                current, lambda src, out: resize_fit_height(
+                    src, out, max_h, cfg.filter,
+                    strip_metadata=cfg.strip_metadata))
     elif is_integer_scaling and scale_val is not None:
         if cfg.nearest:
             current, width, height = _resize_step(
-                current, lambda src, out: sample_pct(src, out, scale_val))
+                current, lambda src, out: sample_pct(
+                    src, out, scale_val, strip_metadata=cfg.strip_metadata))
         else:
             current, width, height = _resize_step(
-                current, lambda src, out: resize_pct(src, out, scale_val, cfg.filter))
+                current, lambda src, out: resize_pct(
+                    src, out, scale_val, cfg.filter,
+                    strip_metadata=cfg.strip_metadata))
     return current, width, height
 
 
@@ -653,10 +684,13 @@ def run_iterative_phase(image_path: Path, cfg: _Config,
                         target: str | None = None) -> Path:
     if not toggles.iterative:
         return image_path
-    if get_image_filesize(image_path) <= cfg.max_size_bytes:
+    if get_image_filesize(image_path) <= cfg.max_size_bytes and not cfg.strip_metadata:
         return image_path
 
-    print(f"-> Image still > {_format_size(cfg.max_size_bytes)}. Iteratively optimizing...")
+    if cfg.strip_metadata:
+        print("-> Re-encoding to strip metadata...")
+    else:
+        print(f"-> Image still > {_format_size(cfg.max_size_bytes)}. Iteratively optimizing...")
 
     backend = _get_backend()
     target_format = target if target is not None else _resolve_target_format(measurements["format"], cfg)
@@ -744,6 +778,20 @@ def run_format_conversion(image_path: Path, cfg: _Config,
     return current
 
 
+def _strip_metadata_pass(source: Path, target_format: str,
+                         animated: bool) -> Path:
+    print("-> Re-encoding to strip metadata...")
+    out = _make_temp("." + target_format.lower())
+    if animated:
+        convert_animation(source, out, quality=_CONVERSION_QUALITY,
+                          strip_metadata=True)
+    else:
+        convert_format(source, out, target_format,
+                       quality=_CONVERSION_QUALITY, strip_metadata=True)
+    utils._abort_if_interrupted()
+    return out
+
+
 def _lossy_fallback_optimize(image_path: Path, cfg: _Config,
                              target_format: str) -> Path:
     out_tmp = _make_temp("." + target_format.lower())
@@ -771,9 +819,11 @@ def _palette_correction_optimize(source: Path, current: Path, cfg: _Config,
         print(f"   {target_format} is uncompressed; resizing to {scale_pct}%...")
         resized = _make_temp(".png")
         if cfg.nearest:
-            sample_pct(source, resized, scale_pct)
+            sample_pct(source, resized, scale_pct,
+                       strip_metadata=cfg.strip_metadata)
         else:
-            resize_pct(source, resized, scale_pct, cfg.filter)
+            resize_pct(source, resized, scale_pct, cfg.filter,
+                       strip_metadata=cfg.strip_metadata)
         utils._abort_if_interrupted()
         png_out = _make_temp(".png")
         color_palette_reduce(resized, png_out, start_colors, cfg.strip_metadata)
@@ -1064,6 +1114,8 @@ def _print_dry_run_report(
             steps.append(f"iterative optimize ({family}, {mode})")
         if target_format != measurements["format"]:
             steps.append(f"convert to {target_format}")
+        if cfg.strip_metadata:
+            steps.append("strip metadata (re-encode if needed)")
 
     budget = (f"explicit budget {_format_kib(cfg.max_size_bytes)}"
               if args.max_size is not None
@@ -1240,10 +1292,14 @@ def _process_image(input_path: Path | None, args: Args) -> dict[str, Any]:
             f"Mode: {cfg.img_mode}. Target: {target_format}{target_note}. Processing..."
         )
 
+        before = current
         if animated:
             # still phases would collapse frames, animated gets the whole job
             current = run_animated_gif_phase(current, cfg, measurements,
                                              toggles, target_format)
+            if cfg.strip_metadata and current == before:
+                current = _strip_metadata_pass(current, target_format,
+                                               animated=True)
         else:
             current = run_resize_phase(current, cfg, measurements, toggles)
             current = run_pngquant_phase(current, cfg, toggles,
@@ -1251,6 +1307,9 @@ def _process_image(input_path: Path | None, args: Args) -> dict[str, Any]:
                                          target_format=target_format)
             current = run_iterative_phase(current, cfg, measurements, toggles, target_format)
             current = run_format_conversion(current, cfg, measurements, target_format)
+            if cfg.strip_metadata and current == before:
+                current = _strip_metadata_pass(current, target_format,
+                                               animated=False)
 
         final_size = get_image_filesize(current)
         if final_size <= cfg.max_size_bytes:
