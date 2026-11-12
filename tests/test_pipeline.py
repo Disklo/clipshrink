@@ -2009,3 +2009,156 @@ def test_validate_flags_ssim_target_png_still_requires_kary():
         pipeline.validate_flags(parse("--ssim-target", "0.95", "--fast", "-F", "png"))
     assert pipeline.validate_flags(
         parse("--ssim-target", "0.95", "--slow", "-F", "png")) is None
+
+
+def test_infer_output_format_edge_cases(tmp_path):
+    assert pipeline.infer_output_format("out.jpeg") == "JPEG"
+    assert pipeline.infer_output_format("out.jpe") == "JPEG"
+    assert pipeline.infer_output_format("out.jp2") == "JP2"
+    assert pipeline.infer_output_format("out.avif") == "AVIF"
+    assert pipeline.infer_output_format("out.webp") == "WEBP"
+    assert pipeline.infer_output_format(None) is None
+    assert pipeline.infer_output_format("out") is None
+    assert pipeline.infer_output_format("out.xyz") is None
+    assert pipeline.infer_output_format("out.svg") is None
+    assert pipeline.infer_output_format("dir.jpg/") is None
+    existing_dir = tmp_path / "dir.jpg"
+    existing_dir.mkdir()
+    assert pipeline.infer_output_format(str(existing_dir)) is None
+
+
+def test_validate_flags_conversion_only_with_output_extension():
+    pipeline.validate_flags(parse("--conversion-only", "-o", "out.jpeg"))
+    with pytest.raises(pipeline.ValidationError):
+        pipeline.validate_flags(parse("--conversion-only", "-o", "out_dir/"))
+    with pytest.raises(pipeline.ValidationError):
+        pipeline.validate_flags(parse("--conversion-only", "-o", "out.svg"))
+
+
+def test_validate_flags_ssim_target_rejects_non_lossy_output_extension():
+    with pytest.raises(pipeline.ValidationError):
+        pipeline.validate_flags(parse("--ssim-target", "0.95", "--slowest", "-o", "out.gif"))
+
+
+def test_warn_conversion_only_warns_on_max_size(capsys):
+    warn_flag_conflicts({"conversion_only", "max_size"})
+    assert "-s/--max-size" in capsys.readouterr().out
+
+
+def test_resolve_processing_toggles_conversion_only_from_output():
+    assert pipeline.resolve_processing_toggles(
+        parse("--conversion-only", "-o", "out.jpeg"), False) == pipeline._Toggles(
+        resize=False, pngquant=False, iterative=False,
+    )
+
+
+def test_check_bypass_output_extension_and_conversion_only(tmp_path, measurements):
+    img = tmp_path / "x.png"
+    img.write_bytes(b"x")
+    assert pipeline.check_bypass(img, pipeline._build_config(parse("-s", "1m", "-o", "out.jpg"))) is False
+    assert pipeline.check_bypass(img, pipeline._build_config(parse("-s", "1m", "-o", "out.png"))) is True
+    assert pipeline.check_bypass(img, pipeline._build_config(parse("--conversion-only", "-o", "out.png"))) is True
+    assert pipeline.check_bypass(img, pipeline._build_config(parse("--conversion-only", "-o", "out.png", "--strip-metadata"))) is False
+    assert pipeline.check_bypass(img, pipeline._build_config(parse("--conversion-only", "-o", "out.jpg"))) is False
+
+
+def test_run_format_conversion_conversion_only_skips_fallbacks(monkeypatch, tmp_path):
+    img = tmp_path / "img.png"
+    img.write_bytes(b"x" * 100)
+
+    def big_convert(inp, outp, target, **kwargs):
+        outp.write_bytes(b"c" * (3 * 1024 * 1024))
+        return True
+
+    def should_not_optimize(*a, **k):
+        raise AssertionError("optimization fallback must not run under --conversion-only")
+
+    monkeypatch.setattr(pipeline, "get_image_format", lambda p: "PNG")
+    monkeypatch.setattr(pipeline, "convert_format", big_convert)
+    monkeypatch.setattr(pipeline, "_lossy_fallback_optimize", should_not_optimize)
+    monkeypatch.setattr(pipeline, "_palette_correction_optimize", should_not_optimize)
+    monkeypatch.setattr(pipeline, "get_image_filesize", lambda p: 3 * 1024 * 1024)
+    measurements = {"format": "PNG", "width": 100, "height": 100, "size": 100}
+
+    out_webp = pipeline.run_format_conversion(
+        img, pipeline._build_config(parse("-F", "webp", "--conversion-only")), measurements,
+    )
+    assert out_webp.suffix == ".webp"
+
+    out_bmp = pipeline.run_format_conversion(
+        img, pipeline._build_config(parse("-F", "bmp", "--conversion-only")), measurements,
+    )
+    assert out_bmp.suffix == ".bmp"
+
+
+def test_process_image_infers_format_from_output_extension(monkeypatch, tmp_path):
+    img = tmp_path / "image.avif"
+    img.write_bytes(b"a" * 1000)
+    out = tmp_path / "image.jpeg"
+    seen = {}
+
+    monkeypatch.setattr(pipeline, "measure_image",
+                        lambda p: {"width": 100, "height": 100, "format": "AVIF", "size": 1000})
+    monkeypatch.setattr(pipeline, "_is_animated", lambda p: False)
+    monkeypatch.setattr(pipeline, "_get_backend", lambda: _backend_stub())
+    monkeypatch.setattr(pipeline.converters, "_has_png_magic", lambda p: False)
+    monkeypatch.setattr(pipeline, "to_png_lossless", lambda i, o: (o.write_bytes(b"p") or True))
+    monkeypatch.setattr(pipeline, "run_resize_phase", lambda inp, c, m, t: inp)
+    monkeypatch.setattr(pipeline, "run_pngquant_phase", lambda inp, c, t, **k: inp)
+
+    def fake_iter(inp, cfg, m, t, target=None):
+        seen["iter_target"] = target
+        seen["budget"] = cfg.max_size_bytes
+        res = tmp_path / "res.jpg"
+        res.write_bytes(b"j")
+        return res
+
+    monkeypatch.setattr(pipeline, "run_iterative_phase", fake_iter)
+    monkeypatch.setattr(pipeline, "run_format_conversion", lambda inp, c, m, target=None: inp)
+
+    result = pipeline.process_image(img, parse("-o", str(out)))
+    assert result["success"] is True
+    assert seen["iter_target"] == "JPEG"
+    assert seen["budget"] == 420
+    assert out.read_bytes() == b"j"
+
+    seen.clear()
+    result = pipeline.process_image(img, parse("-o", str(out), "-F", "webp"))
+    assert result["success"] is True
+    assert seen["iter_target"] == "WEBP"
+    assert seen["budget"] == 410
+
+
+def test_process_image_conversion_only_skips_limits_warning_and_dry_run(
+        monkeypatch, tmp_path, capsys):
+    img = tmp_path / "image.avif"
+    img.write_bytes(b"a" * 1000)
+    out = tmp_path / "image.jpeg"
+
+    monkeypatch.setattr(pipeline, "measure_image",
+                        lambda p: {"width": 100, "height": 100, "format": "AVIF", "size": 1000})
+    monkeypatch.setattr(pipeline, "_is_animated", lambda p: False)
+    monkeypatch.setattr(pipeline, "_get_backend", lambda: _backend_stub())
+    monkeypatch.setattr(pipeline.converters, "_has_png_magic", lambda p: False)
+    monkeypatch.setattr(pipeline, "to_png_lossless", lambda i, o: (o.write_bytes(b"p") or True))
+    monkeypatch.setattr(pipeline, "get_image_format", lambda p: "PNG")
+
+    def fake_convert(inp, outp, target, **kwargs):
+        outp.write_bytes(b"j" * 5000)
+        return True
+
+    monkeypatch.setattr(pipeline, "convert_format", fake_convert)
+    monkeypatch.setattr(pipeline, "_lossy_fallback_optimize",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not optimize")))
+
+    assert pipeline.process_image(img, parse("-o", str(out), "--conversion-only", "--dry-run"))["success"] is True
+    dry_out = capsys.readouterr().out
+    assert "target: JPEG (conversion only)" in dry_out
+    assert not out.exists()
+
+    result = pipeline.process_image(img, parse("-o", str(out), "--conversion-only"))
+    assert result["success"] is True
+    stdout = capsys.readouterr().out
+    assert "Success! Final size:" in stdout
+    assert "optimization limits" not in stdout
+    assert out.read_bytes() == b"j" * 5000

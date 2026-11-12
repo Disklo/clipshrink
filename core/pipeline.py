@@ -39,7 +39,6 @@ from .converters import (
     get_image_format,
     get_image_height,
     get_image_width,
-    normalize_format,
     resize_exact,
     resize_fit_height,
     resize_fit_width,
@@ -48,7 +47,6 @@ from .converters import (
     to_png_lossless,
 )
 from .errors import BackendError
-from .fileops import IMAGE_EXTENSIONS
 from .formats import (
     ANIMATED_TARGET_FORMATS,
     ANIMATION_SOURCE_FORMATS,
@@ -72,6 +70,8 @@ from .validation import (
 )
 from .validation import (
     _Toggles,
+    infer_output_format,
+    resolve_explicit_format,
 )
 from .validation import (
     resolve_image_mode as resolve_image_mode,
@@ -171,6 +171,7 @@ class _Config:
     speed: str
     ssim_target: float | None
     search: SearchSettings
+    conversion_only: bool = False
 
 
 class _Measurements(TypedDict):
@@ -222,7 +223,7 @@ def _build_config(args: Args,
         integer_scaling=args.integer_scaling,
         filter=filt,
         nn_scaler=nn_scaler,
-        format=converters.normalize_format(args.format) if args.format else None,
+        format=resolve_explicit_format(args),
         upscale=args.upscale,
         manual_skip=args.manual_skipping,
         quality=args.quality,
@@ -234,6 +235,7 @@ def _build_config(args: Args,
         speed="fast" if args.fast else "slow" if (args.slow or args.slowest) else "default",
         ssim_target=getattr(args, "ssim_target", None),
         search=resolve_search_settings(args),
+        conversion_only=bool(getattr(args, "conversion_only", False)),
     )
 
 
@@ -263,10 +265,9 @@ def _clipboard_target_format(measured_format: str, cfg: _Config, args: Args) -> 
     # -o out.jpeg declares JPEG, else DIB/TIFF become PNG
     if cfg.format is not None:
         return cfg.format
-    if args.output:
-        ext = Path(args.output).suffix.lstrip(".").upper()
-        if ext and f".{ext.lower()}" in IMAGE_EXTENSIONS:
-            return normalize_format(ext)
+    inferred = infer_output_format(args.output)
+    if inferred is not None:
+        return inferred
     if measured_format not in _CLIPBOARD_TRANSPORT_FORMATS:
         return measured_format
     return "PNG"
@@ -366,6 +367,9 @@ def check_bypass(image_path: Path, cfg: _Config,
     fmt = measurements["format"]
     size = measurements["size"]
     resolved_target = target_format if target_format is not None else _resolve_target_format(fmt, cfg)
+
+    if cfg.conversion_only:
+        return not cfg.strip_metadata and fmt == resolved_target
 
     flag_any = (
         cfg.max_width is not None
@@ -754,7 +758,7 @@ def run_iterative_phase(image_path: Path, cfg: _Config,
 def run_format_conversion(image_path: Path, cfg: _Config,
                           measurements: _Measurements,
                           target: str | None = None) -> Path:
-    target_format = cfg.format if cfg.format is not None else (target or measurements["format"])
+    target_format = target if target is not None else _resolve_target_format(measurements["format"], cfg)
     if get_image_format(image_path) == target_format:
         return image_path
 
@@ -766,7 +770,7 @@ def run_format_conversion(image_path: Path, cfg: _Config,
     current = tmp
     size = get_image_filesize(current)
 
-    if size > cfg.max_size_bytes:
+    if not cfg.conversion_only and size > cfg.max_size_bytes:
         if target_format in LOSSY_FORMATS:
             current = _lossy_fallback_optimize(image_path, cfg, target_format)
             size = get_image_filesize(current)
@@ -1092,8 +1096,9 @@ def _print_dry_run_report(
     # dry run doesn't encode or resize, just measures
     steps: list[str] = []
     if would_bypass:
-        steps.append("bypass: already fits the budget in the target format"
-                     if not args.raw else "bypass (--raw)")
+        steps.append("bypass (--raw)" if args.raw
+                     else "bypass (conversion only, already in target format)" if cfg.conversion_only
+                     else "bypass: already fits the budget in the target format")
     else:
         if is_upscale:
             steps.append(f"neural upscale ({cfg.nn_scaler})" if cfg.nn_scaler
@@ -1117,16 +1122,19 @@ def _print_dry_run_report(
         if cfg.strip_metadata:
             steps.append("strip metadata (re-encode if needed)")
 
-    budget = (f"explicit budget {_format_kib(cfg.max_size_bytes)}"
-              if args.max_size is not None
-              else f"per-format fraction budget {_format_kib(cfg.max_size_bytes)}")
     source_label = (str(input_path) if input_path is not None
                     else f"clipboard ({source_mime or 'unknown'})")
     print("Dry run (no output written):")
     print(f"  source: {source_label}, "
           f"{measurements['width']}x{measurements['height']} "
           f"{measurements['format']}, {_format_kib(measurements['size'])}")
-    print(f"  target: {target_format}, {budget}")
+    if cfg.conversion_only:
+        print(f"  target: {target_format} (conversion only)")
+    else:
+        budget = (f"explicit budget {_format_kib(cfg.max_size_bytes)}"
+                  if args.max_size is not None
+                  else f"per-format fraction budget {_format_kib(cfg.max_size_bytes)}")
+        print(f"  target: {target_format}, {budget}")
     if cfg.ssim_target is not None:
         print(f"  quality floor: SSIM >= {cfg.ssim_target} (budget refined by calibration)")
     print(f"  output: {args.output or 'clipboard'}")
@@ -1242,6 +1250,8 @@ def _process_image(input_path: Path | None, args: Args) -> dict[str, Any]:
                         target_format=target_format):
             if args.raw:
                 print("Raw mode active. Bypassing all processing.")
+            elif cfg.conversion_only:
+                print("Image is already in target format. Bypassing processing.")
             else:
                 print("Image is already under target size, correct format, and bounds.")
             # emit original bytes, working copy may be a normalized PNG
@@ -1277,7 +1287,9 @@ def _process_image(input_path: Path | None, args: Args) -> dict[str, Any]:
             auto_ssim = True
 
         target_note = ""
-        if args.max_size is None:
+        if cfg.conversion_only:
+            target_note = " (conversion only)"
+        elif args.max_size is None:
             if cfg.ssim_target is not None and not auto_ssim:
                 target_note = f" (SSIM >= {cfg.ssim_target:g} vs original)"
             elif auto_ssim:
@@ -1312,7 +1324,7 @@ def _process_image(input_path: Path | None, args: Args) -> dict[str, Any]:
                                                animated=False)
 
         final_size = get_image_filesize(current)
-        if final_size <= cfg.max_size_bytes:
+        if cfg.conversion_only or final_size <= cfg.max_size_bytes:
             print(f"Success! Final size: {final_size / (1024 * 1024):.2f} MB.")
         else:
             print(f"Warning: Reached optimization limits. Final size: {final_size / (1024 * 1024):.2f} MB.")

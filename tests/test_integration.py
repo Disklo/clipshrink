@@ -236,3 +236,32 @@ def test_animated_avif_to_webp_preserves_frames(
     data = out.read_bytes()
     assert data[:4] == b"RIFF" and data[8:12] == b"WEBP"
     assert _frame_count(out) > 1
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not MAGICK, reason="ImageMagick (magick) not installed")
+def test_output_extension_converts_format_without_explicit_format(
+        tmp_path: Path, real_backend_config: None) -> None:
+    src = tmp_path / "in.png"
+    write_noise_png(src, 160, 120)
+    out = tmp_path / "out.jpeg"
+
+    assert run_main("-i", str(src), "-o", str(out)) == 0
+
+    assert out.is_file()
+    assert out.read_bytes()[:2] == b"\xff\xd8"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not MAGICK, reason="ImageMagick (magick) not installed")
+def test_conversion_only_skips_optimization_over_budget(
+        tmp_path: Path, real_backend_config: None) -> None:
+    src = tmp_path / "in.png"
+    write_noise_png(src, 320, 240)
+    out = tmp_path / "out.jpeg"
+
+    assert run_main("-i", str(src), "-o", str(out), "--conversion-only", "-s", "1") == 0
+
+    assert out.is_file()
+    assert out.read_bytes()[:2] == b"\xff\xd8"
+    assert out.stat().st_size > 1024

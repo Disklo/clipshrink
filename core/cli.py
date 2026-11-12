@@ -107,7 +107,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument('-I', '--integer-scaling', type=int,
                         help='Scale by increments (e.g., 50 for 50%%). Used for iterative downscaling.')
     parser.add_argument('-F', '--format', type=str,
-                        help='Target output format (e.g., PNG, JPEG, WEBP). Defaults to original.')
+                        help='Target output format (e.g., PNG, JPEG, WEBP). '
+                             'Defaults to -o extension or original.')
     parser.add_argument('-q', '--quality', type=int,
                         help='Starting quality (up to 100) or max colors (up to 256)')
     parser.add_argument('-Q', '--min-quality', type=int,
@@ -128,7 +129,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument('--no-suffix', action='store_true',
                         help="Do not append '_processed' suffix to output filenames")
     parser.add_argument('--conversion-only', action='store_true',
-                        help='Only convert format (requires --format); skip all optimizations')
+                        help='Only convert format (requires -F/--format or an '
+                             'output image extension); skip all optimizations')
     parser.add_argument('--skip-resize', action='store_true',
                         help='Skip resize phase')
     parser.add_argument('--skip-pngquant', action='store_true',

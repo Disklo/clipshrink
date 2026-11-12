@@ -2,12 +2,36 @@ from __future__ import annotations
 
 import argparse  # noqa: F401  (re-exported for duck-typed callers)
 from dataclasses import dataclass
+from pathlib import Path
 
 from .args import Args
 from .backend import get_backend
 from .converters import normalize_format
 from .errors import ClipshrinkError
+from .fileops import IMAGE_EXTENSIONS
 from .formats import LOSSY_FORMATS
+
+_OUTPUT_FORMAT_EXTS = (IMAGE_EXTENSIONS - {".svg"}) | {".jpe", ".jp2"}
+
+
+def infer_output_format(output: str | None) -> str | None:
+    # trailing separator means a directory even before it exists
+    if not output or output.endswith(("/", "\\")):
+        return None
+    p = Path(output)
+    if p.is_dir():
+        return None
+    ext = p.suffix.lower()
+    if ext in _OUTPUT_FORMAT_EXTS:
+        return normalize_format(ext.lstrip("."))
+    return None
+
+
+def resolve_explicit_format(args: Args) -> str | None:
+    if args.format:
+        return normalize_format(args.format)
+    output = getattr(args, "output", None)
+    return infer_output_format(output if isinstance(output, str) else None)
 
 
 class ValidationError(ClipshrinkError):
@@ -113,11 +137,12 @@ def validate_flags(args: Args) -> None:
             raise ValidationError("--ssim-target cannot be combined with --conversion-only")
         if args.skip_iterative or args.only_resize or args.only_pngquant:
             raise ValidationError("--ssim-target requires the iterative optimization phase")
-        _fmt = normalize_format(args.format) if args.format else None
+        _fmt = resolve_explicit_format(args)
         if _fmt is not None and _fmt not in LOSSY_FORMATS and _fmt != "PNG":
+            src = f"-F {args.format}" if args.format else f"-o {args.output}"
             raise ValidationError(
                 "--ssim-target requires a lossy or PNG target format "
-                f"(-F {args.format} is not)")
+                f"({src} is not)")
 
     # preset knobs are ordinary flags, same range checks
     for flag, val, lo, hi in (
@@ -149,8 +174,8 @@ def validate_flags(args: Args) -> None:
         raise ValidationError("realesrgan-ncnn-vulkan is not installed.")
     if uses_waifu2x and not backend.waifu2x:
         raise ValidationError("waifu2x-ncnn-vulkan is not installed.")
-    if args.conversion_only and not args.format:
-        raise ValidationError("--conversion-only requires --format")
+    if args.conversion_only and not resolve_explicit_format(args):
+        raise ValidationError("--conversion-only requires -F/--format or an output image extension")
     if (uses_realesrgan or uses_waifu2x) and resolve_image_mode(args) == "pixel_art":
         raise ValidationError("Neural upscalers cannot be used in Pixel Art mode.")
 
@@ -171,6 +196,9 @@ def warn_flag_conflicts(provided: set[str]) -> None:
             print("Warning: --conversion-only overrides "
                   + ", ".join(only_flags)
                   + "; the only-* flags have no effect.")
+        if "max_size" in provided:
+            print("Warning: --conversion-only skips optimization, so "
+                  "-s/--max-size has no effect.")
     for only_dest, skip_dest, only_flag, skip_flag in (
         ("only_resize", "skip_resize", "--only-resize", "--skip-resize"),
         ("only_pngquant", "skip_pngquant", "--only-pngquant", "--skip-pngquant"),
@@ -208,7 +236,7 @@ def resolve_processing_toggles(args: Args, is_upscale: bool) -> _Toggles:
 
     if args.raw:
         run_resize = run_pngquant = run_iter = False
-    if args.conversion_only and args.format:
+    if args.conversion_only and resolve_explicit_format(args):
         run_resize = run_pngquant = run_iter = False
 
     if is_upscale and not args.manual_skipping:
