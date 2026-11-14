@@ -417,7 +417,10 @@ def missing_backends(backend: BackendInfo, bin_path: Path | None = None) -> list
     bin_path = bin_path if bin_path is not None else bin_dir()
     missing: list[ToolSpec] = []
     for spec in BACKEND_TOOLS:
-        if spec.label == "libvips" and backend.vips:
+        if spec.label == "libvips":
+            # the vips CLI is not enough, pyvips has to load the library
+            if not backend.vips:
+                missing.append(spec)
             continue
         if find_bin_tool(bin_path, spec.binaries) is not None:
             continue

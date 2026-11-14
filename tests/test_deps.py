@@ -637,7 +637,14 @@ def test_missing_backends_vips_binding_counts(tmp_path: Path,
 def test_missing_backends_silent_when_all_present(tmp_path: Path,
                                                   monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(deps.shutil, "which", lambda cmd: "/usr/bin/" + cmd)
-    assert deps.missing_backends(_backend(), tmp_path) == []
+    assert deps.missing_backends(_backend(vips=True), tmp_path) == []
+
+
+def test_missing_backends_vips_cli_without_binding(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(deps.shutil, "which", lambda cmd: "/usr/bin/" + cmd)
+    missing = deps.missing_backends(_backend(vips=False), tmp_path)
+    assert [spec.label for spec in missing] == ["libvips"]
 
 
 def test_check_backends_windows_non_interactive_hint(tmp_path: Path,
@@ -680,7 +687,7 @@ def test_check_backends_windows_silent_when_complete(tmp_path: Path,
                                                      monkeypatch: pytest.MonkeyPatch,
                                                      capsys: pytest.CaptureFixture[str]):
     monkeypatch.setattr(deps.shutil, "which", lambda cmd: "/usr/bin/" + cmd)
-    assert deps.check_backends_windows(_backend(), first_run=True, bin_path=tmp_path) is False
+    assert deps.check_backends_windows(_backend(vips=True), first_run=True, bin_path=tmp_path) is False
     assert capsys.readouterr().out == ""
 
 
@@ -700,7 +707,7 @@ def test_warn_backends_posix_silent_when_complete(tmp_path: Path,
                                                   capsys: pytest.CaptureFixture[str],
                                                   monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(deps.shutil, "which", lambda cmd: "/usr/bin/" + cmd)
-    deps.warn_backends_posix(_backend(), tmp_path)
+    deps.warn_backends_posix(_backend(vips=True), tmp_path)
     assert capsys.readouterr().out == ""
 
 
