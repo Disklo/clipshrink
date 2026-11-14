@@ -215,7 +215,8 @@ class BinaryLinks:
 
 
 def default_binaries_path() -> Path:
-    return project_root() / BINARIES_FILENAME
+    # packaged next to this module, not at the install root
+    return Path(__file__).resolve().parent / BINARIES_FILENAME
 
 
 def platform_links(links: BinaryLinks | None) -> tuple[str, str]:
@@ -526,7 +527,7 @@ def run_dependency_check(backend: BackendInfo, config: dict[str, Any],
 
 
 def requirements_path() -> Path:
-    return project_root() / "requirements.txt"
+    return Path(__file__).resolve().parent / "requirements.txt"
 
 
 def install_python_deps(python: str | None = None,

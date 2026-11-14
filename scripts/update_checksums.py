@@ -8,7 +8,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-DEFAULT_BINARIES = Path(__file__).resolve().parent.parent / "binaries.json"
+DEFAULT_BINARIES = Path(__file__).resolve().parent.parent / "core" / "binaries.json"
 
 URL_FIELDS = (
     ("url", "sha256"),

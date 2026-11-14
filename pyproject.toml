@@ -24,7 +24,7 @@ packages = ["core"]
 
 [tool.setuptools.package-data]
 # PEP 561: ship inline type information for downstream importers of core/.
-core = ["py.typed"]
+core = ["py.typed", "binaries.json", "requirements.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

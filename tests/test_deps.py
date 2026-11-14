@@ -1069,6 +1069,15 @@ def test_load_binaries_reads_links(tmp_path: Path):
     assert "badlinux" not in links and "badsha" not in links
 
 
+def test_manifest_files_ship_with_the_package():
+    # keep these under core/ so setuptools packages them with the code. At the
+    # repo root the installed copy has no download links or pip requirements.
+    assert deps.default_binaries_path().parent == Path(deps.__file__).resolve().parent
+    assert deps.requirements_path().parent == Path(deps.__file__).resolve().parent
+    assert deps.load_binaries()
+    assert deps.requirements_path().is_file()
+
+
 def test_load_binaries_missing_or_malformed_yields_empty(tmp_path: Path):
     assert deps.load_binaries(tmp_path / "absent.json") == {}
     bad = tmp_path / "bad.json"
